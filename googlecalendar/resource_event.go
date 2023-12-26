@@ -49,6 +49,11 @@ func resourceEvent() *schema.Resource {
 				Required: true,
 			},
 
+			"timezone": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+
 			"guests_can_invite_others": {
 				Type:     schema.TypeBool,
 				Optional: true,
@@ -84,6 +89,14 @@ func resourceEvent() *schema.Resource {
 				Optional:     true,
 				Default:      "",
 				ValidateFunc: validation.StringInSlice(eventValidVisbilities, false),
+			},
+
+			"recurrence": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
 			},
 
 			"attendee": {
@@ -203,6 +216,8 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("description", event.Description)
 	d.Set("start", event.Start)
 	d.Set("end", event.End)
+	d.Set("timezone", event.Start.TimeZone)
+
 	if event.GuestsCanInviteOthers != nil {
 		d.Set("guests_can_invite_others", *event.GuestsCanInviteOthers)
 	}
@@ -212,6 +227,7 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	}
 	d.Set("show_as_available", transparencyToBool(event.Transparency))
 	d.Set("visibility", event.Visibility)
+	d.Set("recurrance", event.Recurrence)
 
 	// Handle reminders
 	if event.Reminders != nil && len(event.Reminders.Overrides) > 0 {
@@ -288,12 +304,14 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 
 	start := d.Get("start").(string)
 	end := d.Get("end").(string)
+	timezone := d.Get("timezone").(string)
 
 	guestsCanInviteOthers := d.Get("guests_can_invite_others").(bool)
 	guestsCanModify := d.Get("guests_can_modify").(bool)
 	guestsCanSeeOtherGuests := d.Get("guests_can_see_other_guests").(bool)
 	showAsAvailable := d.Get("show_as_available").(bool)
 	visibility := d.Get("visibility").(string)
+	recurrence := listToStringSlice(d.Get("recurrence").([]interface{}))
 
 	var event calendar.Event
 	event.Summary = summary
@@ -308,11 +326,14 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 	}
 	event.Transparency = boolToTransparency(showAsAvailable)
 	event.Visibility = visibility
+	event.Recurrence = recurrence
 	event.Start = &calendar.EventDateTime{
 		DateTime: start,
+		TimeZone: timezone,
 	}
 	event.End = &calendar.EventDateTime{
 		DateTime: end,
+		TimeZone: timezone,
 	}
 
 	// Parse reminders
