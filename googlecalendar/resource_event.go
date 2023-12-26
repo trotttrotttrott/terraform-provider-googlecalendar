@@ -105,6 +105,24 @@ func resourceEvent() *schema.Resource {
 				},
 			},
 
+			"attachment": {
+				Type:     schema.TypeSet,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"file_url": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+
+						"title": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+					},
+				},
+			},
+
 			"reminder": {
 				Type:     schema.TypeSet,
 				Optional: true,
@@ -156,6 +174,7 @@ func resourceEventCreate(d *schema.ResourceData, meta interface{}) error {
 
 	eventAPI, err := config.calendar.Events.
 		Insert("primary", event).
+		SupportsAttachments(true).
 		SendNotifications(d.Get("send_notifications").(bool)).
 		MaxAttendees(25).
 		Do()
@@ -204,6 +223,11 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 		d.Set("attendee", flattenEventAttendees(event.Attendees))
 	}
 
+	// Handle attachments
+	if len(event.Attachments) > 0 {
+		d.Set("attachment", flattenEventAttachments(event.Attachments))
+	}
+
 	d.Set("event_id", event.Id)
 	d.Set("hangout_link", event.HangoutLink)
 	d.Set("html_link", event.HtmlLink)
@@ -222,6 +246,7 @@ func resourceEventUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	eventAPI, err := config.calendar.Events.
 		Update("primary", d.Id(), event).
+		SupportsAttachments(true).
 		SendNotifications(d.Get("send_notifications").(bool)).
 		MaxAttendees(25).
 		Do()
@@ -334,6 +359,25 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 		event.Attendees = attendees
 	}
 
+	// Parse attachments
+	attachmentsRaw := d.Get("attachment").(*schema.Set)
+	if attachmentsRaw.Len() > 0 {
+
+		attachments := make([]*calendar.EventAttachment, attachmentsRaw.Len())
+
+		for i, v := range attachmentsRaw.List() {
+
+			m := v.(map[string]interface{})
+
+			attachments[i] = &calendar.EventAttachment{
+				FileUrl: m["file_url"].(string),
+				Title:   m["title"].(string),
+			}
+		}
+
+		event.Attachments = attachments
+	}
+
 	return &event, nil
 }
 
@@ -345,6 +389,17 @@ func flattenEventAttendees(list []*calendar.EventAttendee) []map[string]interfac
 		result[i] = map[string]interface{}{
 			"email":    v.Email,
 			"optional": v.Optional,
+		}
+	}
+	return result
+}
+
+func flattenEventAttachments(list []*calendar.EventAttachment) []map[string]interface{} {
+	result := make([]map[string]interface{}, len(list))
+	for i, v := range list {
+		result[i] = map[string]interface{}{
+			"file_url": v.FileUrl,
+			"title":    v.Title,
 		}
 	}
 	return result
