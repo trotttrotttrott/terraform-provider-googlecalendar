@@ -1,6 +1,6 @@
-module github.com/sethvargo/terraform-provider-googlecalendar
+module github.com/trotttrotttrott/terraform-provider-googlecalendar
 
-go 1.15
+go 1.21
 
 require (
 	github.com/hashicorp/terraform-plugin-sdk v1.15.0

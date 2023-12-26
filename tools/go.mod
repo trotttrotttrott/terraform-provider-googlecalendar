@@ -1,6 +1,6 @@
-module github.com/sethvargo/terraform-provider-googlecalendar/tools
+module github.com/trotttrotttrott/terraform-provider-googlecalendar/tools
 
-go 1.14
+go 1.21
 
 require (
 	github.com/client9/misspell v0.3.4

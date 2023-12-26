@@ -2,7 +2,7 @@ package main
 
 import (
 	"github.com/hashicorp/terraform-plugin-sdk/plugin"
-	"github.com/sethvargo/terraform-provider-googlecalendar/googlecalendar"
+	"github.com/trotttrotttrott/terraform-provider-googlecalendar/googlecalendar"
 )
 
 func main() {
