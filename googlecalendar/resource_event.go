@@ -320,10 +320,6 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 	event.GuestsCanInviteOthers = &guestsCanInviteOthers
 	event.GuestsCanModify = guestsCanModify
 	event.GuestsCanSeeOtherGuests = &guestsCanSeeOtherGuests
-	event.Source = &calendar.EventSource{
-		Title: "Terraform by HashiCorp",
-		Url:   "https://www.terraform.io/",
-	}
 	event.Transparency = boolToTransparency(showAsAvailable)
 	event.Visibility = visibility
 	event.Recurrence = recurrence
