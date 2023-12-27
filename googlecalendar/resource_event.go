@@ -128,6 +128,11 @@ func resourceEvent() *schema.Resource {
 							Required: true,
 						},
 
+						"mime_type": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+
 						"title": {
 							Type:     schema.TypeString,
 							Optional: true,
@@ -383,12 +388,12 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 		attachments := make([]*calendar.EventAttachment, attachmentsRaw.Len())
 
 		for i, v := range attachmentsRaw.List() {
-
 			m := v.(map[string]interface{})
 
 			attachments[i] = &calendar.EventAttachment{
-				FileUrl: m["file_url"].(string),
-				Title:   m["title"].(string),
+				FileUrl:  m["file_url"].(string),
+				MimeType: m["mime_type"].(string),
+				Title:    m["title"].(string),
 			}
 		}
 
@@ -415,8 +420,9 @@ func flattenEventAttachments(list []*calendar.EventAttachment) []map[string]inte
 	result := make([]map[string]interface{}, len(list))
 	for i, v := range list {
 		result[i] = map[string]interface{}{
-			"file_url": v.FileUrl,
-			"title":    v.Title,
+			"file_url":  v.FileUrl,
+			"mime_type": v.MimeType,
+			"title":     v.Title,
 		}
 	}
 	return result
