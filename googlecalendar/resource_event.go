@@ -168,11 +168,6 @@ func resourceEvent() *schema.Resource {
 				Computed: true,
 			},
 
-			"hangout_link": {
-				Type:     schema.TypeString,
-				Computed: true,
-			},
-
 			"html_link": {
 				Type:     schema.TypeString,
 				Computed: true,
@@ -250,7 +245,6 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	}
 
 	d.Set("event_id", event.Id)
-	d.Set("hangout_link", event.HangoutLink)
 	d.Set("html_link", event.HtmlLink)
 
 	return nil
