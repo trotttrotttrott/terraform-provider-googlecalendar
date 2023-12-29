@@ -61,7 +61,7 @@ func resourceEvent() *schema.Resource {
 			"guests_can_modify": {
 				Type:     schema.TypeBool,
 				Optional: true,
-				Default:  false,
+				Default:  true,
 			},
 
 			"guests_can_see_other_guests": {
