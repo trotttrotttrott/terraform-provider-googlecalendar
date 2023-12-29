@@ -3,7 +3,6 @@ package googlecalendar
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/validation"
@@ -11,8 +10,7 @@ import (
 )
 
 var (
-	eventValidMethods = []string{"email", "popup", "sms"}
-
+	eventValidMethods     = []string{"email", "popup", "sms"}
 	eventValidVisbilities = []string{"public", "private"}
 )
 
@@ -141,25 +139,6 @@ func resourceEvent() *schema.Resource {
 				},
 			},
 
-			"reminder": {
-				Type:     schema.TypeSet,
-				Optional: true,
-				Elem: &schema.Resource{
-					Schema: map[string]*schema.Schema{
-						"method": {
-							Type:         schema.TypeString,
-							Required:     true,
-							ValidateFunc: validation.StringInSlice(eventValidMethods, false),
-						},
-
-						"before": {
-							Type:     schema.TypeString,
-							Required: true,
-						},
-					},
-				},
-			},
-
 			//
 			// Computed values
 			//
@@ -228,11 +207,6 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("show_as_available", transparencyToBool(event.Transparency))
 	d.Set("visibility", event.Visibility)
 	d.Set("recurrance", event.Recurrence)
-
-	// Handle reminders
-	if event.Reminders != nil && len(event.Reminders.Overrides) > 0 {
-		d.Set("reminder", flattenEventReminders(event.Reminders.Overrides))
-	}
 
 	// Handle attendees
 	if len(event.Attendees) > 0 {
@@ -331,33 +305,6 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 		TimeZone: timezone,
 	}
 
-	// Parse reminders
-	remindersRaw := d.Get("reminder").(*schema.Set)
-	if remindersRaw.Len() > 0 {
-		reminders := make([]*calendar.EventReminder, remindersRaw.Len())
-
-		for i, v := range remindersRaw.List() {
-			m := v.(map[string]interface{})
-
-			d, err := time.ParseDuration(m["before"].(string))
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse 'before': %w", err)
-			}
-			minutes := int64(d.Round(time.Minute).Minutes())
-
-			reminders[i] = &calendar.EventReminder{
-				Method:  m["method"].(string),
-				Minutes: minutes,
-			}
-		}
-
-		event.Reminders = &calendar.EventReminders{
-			Overrides:       reminders,
-			UseDefault:      false,
-			ForceSendFields: []string{"UseDefault"},
-		}
-	}
-
 	// Parse attendees
 	attendeesRaw := d.Get("attendee").(*schema.Set)
 	if attendeesRaw.Len() > 0 {
@@ -397,7 +344,7 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 	return &event, nil
 }
 
-// flattenEventAttendees flattens the list of event reminders into a map for
+// flattenEventAttendees flattens the list of event attendees into a map for
 // storing in the schema.
 func flattenEventAttendees(list []*calendar.EventAttendee) []map[string]interface{} {
 	result := make([]map[string]interface{}, len(list))
@@ -417,19 +364,6 @@ func flattenEventAttachments(list []*calendar.EventAttachment) []map[string]inte
 			"file_url":  v.FileUrl,
 			"mime_type": v.MimeType,
 			"title":     v.Title,
-		}
-	}
-	return result
-}
-
-// flattenEventReminders flattens the list of event reminders into a map for
-// storing in the schema.
-func flattenEventReminders(list []*calendar.EventReminder) []map[string]interface{} {
-	result := make([]map[string]interface{}, len(list))
-	for i, v := range list {
-		result[i] = map[string]interface{}{
-			"method": v.Method,
-			"before": fmt.Sprintf("%dm", v.Minutes),
 		}
 	}
 	return result
