@@ -97,6 +97,19 @@ func resourceEvent() *schema.Resource {
 				},
 			},
 
+			"conference": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"google_meet_id": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+					},
+				},
+			},
+
 			"attendee": {
 				Type:     schema.TypeSet,
 				Optional: true,
@@ -167,6 +180,7 @@ func resourceEventCreate(d *schema.ResourceData, meta interface{}) error {
 	eventAPI, err := config.calendar.Events.
 		Insert("primary", event).
 		SupportsAttachments(true).
+		ConferenceDataVersion(1).
 		SendNotifications(d.Get("send_notifications").(bool)).
 		MaxAttendees(25).
 		Do()
@@ -204,16 +218,21 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	if event.GuestsCanSeeOtherGuests != nil {
 		d.Set("guests_can_see_other_guests", *event.GuestsCanSeeOtherGuests)
 	}
+
 	d.Set("show_as_available", transparencyToBool(event.Transparency))
 	d.Set("visibility", event.Visibility)
 	d.Set("recurrance", event.Recurrence)
 
-	// Handle attendees
+	if event.ConferenceData != nil {
+		d.Set("conference", map[string]interface{}{
+			"google_meet_id": event.ConferenceData.ConferenceId,
+		})
+	}
+
 	if len(event.Attendees) > 0 {
 		d.Set("attendee", flattenEventAttendees(event.Attendees))
 	}
 
-	// Handle attachments
 	if len(event.Attachments) > 0 {
 		d.Set("attachment", flattenEventAttachments(event.Attachments))
 	}
@@ -236,6 +255,7 @@ func resourceEventUpdate(d *schema.ResourceData, meta interface{}) error {
 	eventAPI, err := config.calendar.Events.
 		Update("primary", d.Id(), event).
 		SupportsAttachments(true).
+		ConferenceDataVersion(1).
 		SendNotifications(d.Get("send_notifications").(bool)).
 		MaxAttendees(25).
 		Do()
@@ -303,6 +323,25 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 	event.End = &calendar.EventDateTime{
 		DateTime: end,
 		TimeZone: timezone,
+	}
+
+	conference := d.Get("conference").(map[string]interface{})
+	if len(conference) > 0 {
+		googleMeetID := conference["google_meet_id"].(string)
+		event.ConferenceData = &calendar.ConferenceData{
+			ConferenceSolution: &calendar.ConferenceSolution{
+				Key: &calendar.ConferenceSolutionKey{
+					Type: "hangoutsMeet",
+				},
+			},
+			EntryPoints: []*calendar.EntryPoint{
+				{
+					EntryPointType: "video",
+					Label:          fmt.Sprintf("meet.google.com/%s", googleMeetID),
+					Uri:            fmt.Sprintf("https://meet.google.com/%s", googleMeetID),
+				},
+			},
+		}
 	}
 
 	// Parse attendees
