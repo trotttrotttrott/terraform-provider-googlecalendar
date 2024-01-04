@@ -1,187 +1,115 @@
 # Terraform Google Calendar Provider
 
-This is a [Terraform][terraform] provider for managing meetings on Google
-Calendar. It enables you to treat "calendars as code" the same way you already
-treat infrastructure as code!
+This fork is optimized for managing recurring meetings, like one on ones.
 
+It's not intended to be an all-encompassing Google Calendar provider.
 
 ## Installation
 
-1. Use Terraform 0.13+.
+This is not deployed to the terraform registry. For now you'd have to clone this
+repo, build the provider locally (`go build`), and reference the provider
+locally.
 
-1. Pull from the module registry:
+You can use a `.terraformrc` file like this:
 
-    ```hcl
-    terraform {
-      required_providers {
-        googlecalendar = {
-          source  = "sethvargo/googlecalendar"
-          version = "~> 0.3"
-        }
-      }
+```hcl
+plugin_cache_dir   = "$HOME/.terraform.d/plugin-cache"
+disable_checkpoint = true
+
+provider_installation {
+  dev_overrides {
+    "googlecalendar" = "/path/to/terraform-provider-googlecalendar"
+  }
+}
+```
+
+See [docs](https://developer.hashicorp.com/terraform/cli/config/config-file#development-overrides-for-provider-developers)
+for more info on .terraformrc.
+
+With the above in a `.terraformrc`, you can reference the provider like this:
+
+```hcl
+terraform {
+  required_providers {
+    googlecalendar = {
+      source = "googlecalendar"
     }
-    ```
-
-1. Create your Terraform configurations as normal, and run `terraform init`:
-
-    ```sh
-    $ terraform init
-    ```
-
+  }
+}
+```
 
 ## Usage
 
-1. Create a Terraform configuration file:
+```hcl
+resource "googlecalendar_event" "test" {
 
-    ```hcl
-    resource "googlecalendar_event" "example" {
-      summary     = "My Event"
-      description = "Long-form description of the event"
-      location    = "Conference Room B"
+  summary     = "Test Terraform Event"
+  description = "Testing fork of sethvargo/terraform-provider-googlecalendar"
 
-      // Start and end times work best if specified as RFC3339.
-      start = "2017-10-12T15:00:00-05:00"
-      end   = "2017-10-12T17:00:00-05:00"
+  # RFC3339 date format - https://datatracker.ietf.org/doc/html/rfc3339
+  #
+  # UTC offset is optional since we also have the `timezone` argument - though
+  # necessary if you intend to use the `timeadd` function
+  start = "2023-12-27T20:00:00"
+  end   = "2023-12-27T21:00:00"
 
-      // Each attendee is listed separately, and attendees can be marked as
-      // optional.
-      attendee {
-        email = "seth@sethvargo.com"
-      }
+  # IANA time zone database format - https://en.wikipedia.org/wiki/List_of_tz_database_time_zones
+  #
+  # Google supports having different start and end timezones, but this provider does not.
+  timezone = "America/New_York"
 
-      attendee {
-        email    = "you@company.com"
-        optional = true
-      }
-    }
-    ```
+  # RFC5545 format for recurrence
+  #
+  # https://datatracker.ietf.org/doc/html/rfc5545#section-3.8.5.3
+  recurrence = [
+    "RRULE:FREQ=WEEKLY",
+  ]
 
-1. Run `terraform init` to pull in the provider:
+  attendee {
+    email = "me@domain.com"
+  }
 
-    ```sh
-    $ terraform init
-    ```
+  attendee {
+    email = "you@domain.com"
+  }
 
-1. Run `terraform plan` and `terraform apply` to create events:
+  attachment {
+    title     = "you : me"
+    file_url  = "https://docs.google.com/document/d/.../edit"
+    mime_type = "application/vnd.google-apps.document"
+  }
 
-    ```sh
-    $ terraform plan
+  conference = {
 
-    $ terraform apply
-    ```
+    # Only Google Meet is supported so far.
+    #
+    # This provider doesn't attempt to create new instances of meetings.
+    # Go to meet.google.com and "create a meeting for later".
+    google_meet_id = "aaa-bbbb-ccc"
+  }
+}
+```
 
-## Examples
+## Google Authentication
 
-For more examples, please see the [examples][examples] folder in this
-repository.
+Anticipated use is with `gcloud` using your own Google identity with Application
+Default Credentials.
 
-## Reference
+Your ADC will require an additional scope. This command would log you in and set
+defaults + calendar access:
 
-### Arguments
+```sh
+gcloud auth login
 
-Arguments are provided as inputs to the resource, in the `*.tf` file.
+gcloud auth application-default login \
+  --billing-project "$BILLING_PROJECT" \
+  --scopes \
+openid,\
+https://www.googleapis.com/auth/userinfo.email,\
+https://www.googleapis.com/auth/cloud-platform,\
+https://www.googleapis.com/auth/sqlservice.login,\
+https://www.googleapis.com/auth/calendar
+```
 
-- `summary` `(string, required)` - the "title" of the event.
-
-- `start` `(string, required)` - the RFC3339-formatted start time of the event
-  _with the timestamp included_.
-
-- `end` `(string, required)` - the RFC3339-formatted end time of the event _with
-  the timestamp included_.
-
-- `description` `(string)` - the long-form description of the event. This can be
-  multiple paragraphs using Terraform's heredoc syntax.
-
-- `guests_can_invite_others` `(bool, true)` - specifies that guests (attendees)
-  can invite other guests. Set this to false to allow only the organizer to
-  manage the guest list.
-
-- `guests_can_modify` `(bool, false)` - specifies that guests (attendees) can
-  modify the event (change start time, description, etc). Set this to true to
-  give any guest full control over the event.
-
-- `guests_can_see_other_guests` `(bool, true)` - specifies that guests
-  (attendees) can see other guests. Set this to false to restrict the guest list
-  visibility.
-
-- `show_as_available` `(bool, false)` - specifies that the time should be
-  "blocked" on the calendar (mark as busy). Set this to true to create an event
-  that is transparent.
-
-- `send_notifications` `(bool, true)` - specifies that email notifications
-  should be sent to guests (attendees). Set this to false to put things on
-  people's calendar's without notifying them.
-
-- `visibility` `(string)` - specifies the visibility for the event. Valid values
-  are:
-
-    - `""` - default inherit from calendar
-    - `"public"` - public
-    - `"private"` - private
-
-- `attendee` `(list of structures)` - specifies a guest (attendee) to invite to
-  the event. This may be specified more than once to invite multiple people to
-  the same event. The following fields are supported:
-
-    - `email` `(string, required)` - the Google email address of the attendee.
-
-    - `optional` `(bool, false)` - specifies that the guest (attendee) is marked
-      as optional. Set this to true to mark the user as an optional attendee.
-
-- `reminder` `(list of reminders)` - specifies a reminder option leading up to
-  the event for all attendees. This overrides any default reminders the user has
-  set for their calendar. Leave this unset to inherit calendar default
-  reminders. This may be specified more than once to remind multiple times. The
-  following fields are supported:
-
-    - `method` `(string, required)` - the method to use. Valid options are:
-
-      - `"email"` - send an email
-      - `"popup"` - popup in-browser
-      - `"sms"` - send a text message (requires GSuite)
-
-    - `before` `(string, required)` - the duration prior to the meeting to send
-      the reminder. Note that the Google Calendar API expects this to be the
-      "number of minutes", but Terraform adds syntactic sugar here by allowing
-      you to specify the time in a Go timestamp like "30m" or "4h". These
-      timestamps are parsed and converted to minutes automatically.
-
-### Attributes
-
-Attributes are values that are only known after creation.
-
-- `event_id` `(string)` - the unique ID of the event on this calendar
-
-- `hangout_link` `(string)` - the HTTPS web link to the attached Google Hangout.
-  In practice, I have been unable to get this link to appear.
-
-- `html_link` `(string)` - the HTTP web link to the calendar invite on
-  [calendar.google.com](https://calendar.google.com/).
-
-
-## Constraints & Understanding
-
-### Architecture
-
-It is important to note that you are not creating an event on a person's
-calendar - that is not permitted. Can you imagine if anyone with a Google Cloud
-account could put events on your calendar!? Instead, you are creating an event
-on the service account's calendar and then inviting the appropriate attendees to
-that event. In this way, Terraform acts as a "robot" which invites people to an
-event.
-
-### Time
-
-A good future enhancement is to allow "human" times. Right now, all times _must_
-be specified in RFC3339 format. It would be great to allow arbitrary human times
-like "Oct 13, 2017 at 4pm EST".
-
-## License & Author
-
-This project is licensed under the MIT license by Seth Vargo
-(seth@sethvargo.com).
-
-[terraform]: https://www.terraform.io/
-[releases]: https://github.com/sethvargo/terraform-provider-googlecalendar/releases
-[gcloud-creds]: https://console.cloud.google.com/apis/credentials
-[examples]: https://github.com/sethvargo/terraform-provider-googlecalendar/tree/master/examples
+`$BILLING_PROJECT` must be set to a GCP project where the
+`calendar-json.googleapis.com` service is enabled.
