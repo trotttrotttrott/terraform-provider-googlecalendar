@@ -3,7 +3,6 @@ package googlecalendar
 import (
 	"fmt"
 	"log"
-	"time"
 
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/validation"
@@ -11,8 +10,7 @@ import (
 )
 
 var (
-	eventValidMethods = []string{"email", "popup", "sms"}
-
+	eventValidMethods     = []string{"email", "popup", "sms"}
 	eventValidVisbilities = []string{"public", "private"}
 )
 
@@ -49,6 +47,11 @@ func resourceEvent() *schema.Resource {
 				Required: true,
 			},
 
+			"timezone": {
+				Type:     schema.TypeString,
+				Required: true,
+			},
+
 			"guests_can_invite_others": {
 				Type:     schema.TypeBool,
 				Optional: true,
@@ -58,7 +61,7 @@ func resourceEvent() *schema.Resource {
 			"guests_can_modify": {
 				Type:     schema.TypeBool,
 				Optional: true,
-				Default:  false,
+				Default:  true,
 			},
 
 			"guests_can_see_other_guests": {
@@ -86,6 +89,27 @@ func resourceEvent() *schema.Resource {
 				ValidateFunc: validation.StringInSlice(eventValidVisbilities, false),
 			},
 
+			"recurrence": {
+				Type:     schema.TypeList,
+				Optional: true,
+				Elem: &schema.Schema{
+					Type: schema.TypeString,
+				},
+			},
+
+			"conference": {
+				Type:     schema.TypeMap,
+				Optional: true,
+				Elem: &schema.Resource{
+					Schema: map[string]*schema.Schema{
+						"google_meet_id": {
+							Type:     schema.TypeString,
+							Optional: true,
+						},
+					},
+				},
+			},
+
 			"attendee": {
 				Type:     schema.TypeSet,
 				Optional: true,
@@ -105,20 +129,24 @@ func resourceEvent() *schema.Resource {
 				},
 			},
 
-			"reminder": {
+			"attachment": {
 				Type:     schema.TypeSet,
 				Optional: true,
 				Elem: &schema.Resource{
 					Schema: map[string]*schema.Schema{
-						"method": {
-							Type:         schema.TypeString,
-							Required:     true,
-							ValidateFunc: validation.StringInSlice(eventValidMethods, false),
-						},
-
-						"before": {
+						"file_url": {
 							Type:     schema.TypeString,
 							Required: true,
+						},
+
+						"mime_type": {
+							Type:     schema.TypeString,
+							Required: true,
+						},
+
+						"title": {
+							Type:     schema.TypeString,
+							Optional: true,
 						},
 					},
 				},
@@ -128,11 +156,6 @@ func resourceEvent() *schema.Resource {
 			// Computed values
 			//
 			"event_id": {
-				Type:     schema.TypeString,
-				Computed: true,
-			},
-
-			"hangout_link": {
 				Type:     schema.TypeString,
 				Computed: true,
 			},
@@ -156,6 +179,8 @@ func resourceEventCreate(d *schema.ResourceData, meta interface{}) error {
 
 	eventAPI, err := config.calendar.Events.
 		Insert("primary", event).
+		SupportsAttachments(true).
+		ConferenceDataVersion(1).
 		SendNotifications(d.Get("send_notifications").(bool)).
 		MaxAttendees(25).
 		Do()
@@ -184,6 +209,8 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("description", event.Description)
 	d.Set("start", event.Start)
 	d.Set("end", event.End)
+	d.Set("timezone", event.Start.TimeZone)
+
 	if event.GuestsCanInviteOthers != nil {
 		d.Set("guests_can_invite_others", *event.GuestsCanInviteOthers)
 	}
@@ -191,21 +218,26 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	if event.GuestsCanSeeOtherGuests != nil {
 		d.Set("guests_can_see_other_guests", *event.GuestsCanSeeOtherGuests)
 	}
+
 	d.Set("show_as_available", transparencyToBool(event.Transparency))
 	d.Set("visibility", event.Visibility)
+	d.Set("recurrance", event.Recurrence)
 
-	// Handle reminders
-	if event.Reminders != nil && len(event.Reminders.Overrides) > 0 {
-		d.Set("reminder", flattenEventReminders(event.Reminders.Overrides))
+	if event.ConferenceData != nil {
+		d.Set("conference", map[string]interface{}{
+			"google_meet_id": event.ConferenceData.ConferenceId,
+		})
 	}
 
-	// Handle attendees
 	if len(event.Attendees) > 0 {
 		d.Set("attendee", flattenEventAttendees(event.Attendees))
 	}
 
+	if len(event.Attachments) > 0 {
+		d.Set("attachment", flattenEventAttachments(event.Attachments))
+	}
+
 	d.Set("event_id", event.Id)
-	d.Set("hangout_link", event.HangoutLink)
 	d.Set("html_link", event.HtmlLink)
 
 	return nil
@@ -222,6 +254,8 @@ func resourceEventUpdate(d *schema.ResourceData, meta interface{}) error {
 
 	eventAPI, err := config.calendar.Events.
 		Update("primary", d.Id(), event).
+		SupportsAttachments(true).
+		ConferenceDataVersion(1).
 		SendNotifications(d.Get("send_notifications").(bool)).
 		MaxAttendees(25).
 		Do()
@@ -263,12 +297,14 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 
 	start := d.Get("start").(string)
 	end := d.Get("end").(string)
+	timezone := d.Get("timezone").(string)
 
 	guestsCanInviteOthers := d.Get("guests_can_invite_others").(bool)
 	guestsCanModify := d.Get("guests_can_modify").(bool)
 	guestsCanSeeOtherGuests := d.Get("guests_can_see_other_guests").(bool)
 	showAsAvailable := d.Get("show_as_available").(bool)
 	visibility := d.Get("visibility").(string)
+	recurrence := listToStringSlice(d.Get("recurrence").([]interface{}))
 
 	var event calendar.Event
 	event.Summary = summary
@@ -277,43 +313,34 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 	event.GuestsCanInviteOthers = &guestsCanInviteOthers
 	event.GuestsCanModify = guestsCanModify
 	event.GuestsCanSeeOtherGuests = &guestsCanSeeOtherGuests
-	event.Source = &calendar.EventSource{
-		Title: "Terraform by HashiCorp",
-		Url:   "https://www.terraform.io/",
-	}
 	event.Transparency = boolToTransparency(showAsAvailable)
 	event.Visibility = visibility
+	event.Recurrence = recurrence
 	event.Start = &calendar.EventDateTime{
 		DateTime: start,
+		TimeZone: timezone,
 	}
 	event.End = &calendar.EventDateTime{
 		DateTime: end,
+		TimeZone: timezone,
 	}
 
-	// Parse reminders
-	remindersRaw := d.Get("reminder").(*schema.Set)
-	if remindersRaw.Len() > 0 {
-		reminders := make([]*calendar.EventReminder, remindersRaw.Len())
-
-		for i, v := range remindersRaw.List() {
-			m := v.(map[string]interface{})
-
-			d, err := time.ParseDuration(m["before"].(string))
-			if err != nil {
-				return nil, fmt.Errorf("failed to parse 'before': %w", err)
-			}
-			minutes := int64(d.Round(time.Minute).Minutes())
-
-			reminders[i] = &calendar.EventReminder{
-				Method:  m["method"].(string),
-				Minutes: minutes,
-			}
-		}
-
-		event.Reminders = &calendar.EventReminders{
-			Overrides:       reminders,
-			UseDefault:      false,
-			ForceSendFields: []string{"UseDefault"},
+	conference := d.Get("conference").(map[string]interface{})
+	if len(conference) > 0 {
+		googleMeetID := conference["google_meet_id"].(string)
+		event.ConferenceData = &calendar.ConferenceData{
+			ConferenceSolution: &calendar.ConferenceSolution{
+				Key: &calendar.ConferenceSolutionKey{
+					Type: "hangoutsMeet",
+				},
+			},
+			EntryPoints: []*calendar.EntryPoint{
+				{
+					EntryPointType: "video",
+					Label:          fmt.Sprintf("meet.google.com/%s", googleMeetID),
+					Uri:            fmt.Sprintf("https://meet.google.com/%s", googleMeetID),
+				},
+			},
 		}
 	}
 
@@ -334,10 +361,29 @@ func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Eve
 		event.Attendees = attendees
 	}
 
+	// Parse attachments
+	attachmentsRaw := d.Get("attachment").(*schema.Set)
+	if attachmentsRaw.Len() > 0 {
+
+		attachments := make([]*calendar.EventAttachment, attachmentsRaw.Len())
+
+		for i, v := range attachmentsRaw.List() {
+			m := v.(map[string]interface{})
+
+			attachments[i] = &calendar.EventAttachment{
+				FileUrl:  m["file_url"].(string),
+				MimeType: m["mime_type"].(string),
+				Title:    m["title"].(string),
+			}
+		}
+
+		event.Attachments = attachments
+	}
+
 	return &event, nil
 }
 
-// flattenEventAttendees flattens the list of event reminders into a map for
+// flattenEventAttendees flattens the list of event attendees into a map for
 // storing in the schema.
 func flattenEventAttendees(list []*calendar.EventAttendee) []map[string]interface{} {
 	result := make([]map[string]interface{}, len(list))
@@ -350,14 +396,13 @@ func flattenEventAttendees(list []*calendar.EventAttendee) []map[string]interfac
 	return result
 }
 
-// flattenEventReminders flattens the list of event reminders into a map for
-// storing in the schema.
-func flattenEventReminders(list []*calendar.EventReminder) []map[string]interface{} {
+func flattenEventAttachments(list []*calendar.EventAttachment) []map[string]interface{} {
 	result := make([]map[string]interface{}, len(list))
 	for i, v := range list {
 		result[i] = map[string]interface{}{
-			"method": v.Method,
-			"before": fmt.Sprintf("%dm", v.Minutes),
+			"file_url":  v.FileUrl,
+			"mime_type": v.MimeType,
+			"title":     v.Title,
 		}
 	}
 	return result
