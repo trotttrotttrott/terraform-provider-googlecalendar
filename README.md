@@ -90,6 +90,26 @@ resource "googlecalendar_event" "test" {
 }
 ```
 
+### Changing Events
+
+When this provider changes or destoys a recurring event, all instances past and
+future are impacted. In many cases, this is not what you want.
+
+If you only want to change or remove future events, the easiest thing to do is
+delete the next occurance on the web UI and select "this and following events".
+From here, remove the event from state and create a new one.
+
+What this does to an event is add an `UNTIL` rule to `recurrence`. For example
+if you have an event configured with `RRULE:FREQ=WEEKLY`, it will be updated to
+something like `RRULE:FREQ=WEEKLY;UNTIL=20240220T045959Z`. This will show up in
+execution plans.
+
+If you attempt to only change the event with "this and following events", an
+`UNTIL` rule is added just as if you deleted it. Google then creates a
+completely new event that would not be managed with Terraform. This will also
+happen if `guests_can_modify` is true and someone else performs a similar
+action.
+
 ## Google Authentication
 
 Anticipated use is with `gcloud` using your own Google identity with Application
