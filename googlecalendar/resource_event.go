@@ -3,6 +3,7 @@ package googlecalendar
 import (
 	"fmt"
 	"log"
+	"path"
 
 	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
 	"github.com/hashicorp/terraform-plugin-sdk/helper/validation"
@@ -223,9 +224,9 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 	d.Set("visibility", event.Visibility)
 	d.Set("recurrance", event.Recurrence)
 
-	if event.ConferenceData != nil {
+	if event.ConferenceData != nil && len(event.ConferenceData.EntryPoints) > 0 {
 		d.Set("conference", map[string]interface{}{
-			"google_meet_id": event.ConferenceData.ConferenceId,
+			"google_meet_id": path.Base(event.ConferenceData.EntryPoints[0].Uri),
 		})
 	}
 
