@@ -222,7 +222,7 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 
 	d.Set("show_as_available", transparencyToBool(event.Transparency))
 	d.Set("visibility", event.Visibility)
-	d.Set("recurrance", event.Recurrence)
+	d.Set("recurrence", event.Recurrence)
 
 	if event.ConferenceData != nil && len(event.ConferenceData.EntryPoints) > 0 {
 		d.Set("conference", map[string]interface{}{
