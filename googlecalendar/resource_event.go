@@ -354,13 +354,13 @@ func resourceEventBuild(d *schema.ResourceData, event *calendar.Event) (*calenda
 
 		for i, v := range attendeesRaw.List() {
 			m := v.(map[string]interface{})
-
+			attendees[i] = &calendar.EventAttendee{
+				Email: m["email"].(string),
+			}
 			// If attendee is already on the event, don't change anything other than
 			// what this provider manages - especially ResponseStatus
-			email := m["email"].(string)
-			attendees[i] = &calendar.EventAttendee{}
 			for _, ea := range attendeesExisting {
-				if ea.Email == email {
+				if ea.Email == attendees[i].Email {
 					attendees[i] = ea
 				}
 			}
