@@ -173,7 +173,7 @@ func resourceEvent() *schema.Resource {
 func resourceEventCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	event, err := resourceEventBuild(d, meta)
+	event, err := resourceEventBuild(d)
 	if err != nil {
 		return fmt.Errorf("failed to build event: %w", err)
 	}
@@ -248,7 +248,7 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 func resourceEventUpdate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	event, err := resourceEventBuild(d, meta)
+	event, err := resourceEventBuild(d)
 	if err != nil {
 		return fmt.Errorf("failed to build event: %w", err)
 	}
@@ -291,7 +291,7 @@ func resourceEventDelete(d *schema.ResourceData, meta interface{}) error {
 
 // resourceBuildEvent is a shared helper function which builds an "event" struct
 // from the schema. This is used by create and update.
-func resourceEventBuild(d *schema.ResourceData, meta interface{}) (*calendar.Event, error) {
+func resourceEventBuild(d *schema.ResourceData) (*calendar.Event, error) {
 	summary := d.Get("summary").(string)
 	location := d.Get("location").(string)
 	description := d.Get("description").(string)
