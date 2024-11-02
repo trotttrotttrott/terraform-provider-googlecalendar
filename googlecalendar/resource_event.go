@@ -10,11 +10,6 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-var (
-	eventValidMethods     = []string{"email", "popup", "sms"}
-	eventValidVisbilities = []string{"public", "private"}
-)
-
 func resourceEvent() *schema.Resource {
 	return &schema.Resource{
 		Create: resourceEventCreate,
@@ -87,7 +82,7 @@ func resourceEvent() *schema.Resource {
 				Type:         schema.TypeString,
 				Optional:     true,
 				Default:      "",
-				ValidateFunc: validation.StringInSlice(eventValidVisbilities, false),
+				ValidateFunc: validation.StringInSlice([]string{"public", "private"}, false),
 			},
 
 			"recurrence": {
