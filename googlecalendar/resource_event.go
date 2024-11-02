@@ -173,7 +173,7 @@ func resourceEvent() *schema.Resource {
 func resourceEventCreate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	event, err := resourceEventBuild(d)
+	event, err := resourceEventBuild(d, &calendar.Event{})
 	if err != nil {
 		return fmt.Errorf("failed to build event: %w", err)
 	}
@@ -248,7 +248,14 @@ func resourceEventRead(d *schema.ResourceData, meta interface{}) error {
 func resourceEventUpdate(d *schema.ResourceData, meta interface{}) error {
 	config := meta.(*Config)
 
-	event, err := resourceEventBuild(d)
+	event, err := config.calendar.Events.
+		Get("primary", d.Id()).
+		Do()
+	if err != nil {
+		return fmt.Errorf("failed to get event: %w", err)
+	}
+
+	event, err = resourceEventBuild(d, event)
 	if err != nil {
 		return fmt.Errorf("failed to build event: %w", err)
 	}
@@ -291,7 +298,7 @@ func resourceEventDelete(d *schema.ResourceData, meta interface{}) error {
 
 // resourceBuildEvent is a shared helper function which builds an "event" struct
 // from the schema. This is used by create and update.
-func resourceEventBuild(d *schema.ResourceData) (*calendar.Event, error) {
+func resourceEventBuild(d *schema.ResourceData, event *calendar.Event) (*calendar.Event, error) {
 	summary := d.Get("summary").(string)
 	location := d.Get("location").(string)
 	description := d.Get("description").(string)
@@ -307,7 +314,6 @@ func resourceEventBuild(d *schema.ResourceData) (*calendar.Event, error) {
 	visibility := d.Get("visibility").(string)
 	recurrence := listToStringSlice(d.Get("recurrence").([]interface{}))
 
-	var event calendar.Event
 	event.Summary = summary
 	event.Location = location
 	event.Description = description
@@ -345,7 +351,8 @@ func resourceEventBuild(d *schema.ResourceData) (*calendar.Event, error) {
 		}
 	}
 
-	// Parse attendees
+	// Attendees
+	attendeesExisting := event.Attendees
 	attendeesRaw := d.Get("attendee").(*schema.Set)
 	if attendeesRaw.Len() > 0 {
 		attendees := make([]*calendar.EventAttendee, attendeesRaw.Len())
@@ -353,16 +360,22 @@ func resourceEventBuild(d *schema.ResourceData) (*calendar.Event, error) {
 		for i, v := range attendeesRaw.List() {
 			m := v.(map[string]interface{})
 
-			attendees[i] = &calendar.EventAttendee{
-				Email:    m["email"].(string),
-				Optional: m["optional"].(bool),
+			// If attendee is already on the event, don't change anything other than
+			// what this provider manages - especially ResponseStatus
+			email := m["email"].(string)
+			attendees[i] = &calendar.EventAttendee{}
+			for _, ea := range attendeesExisting {
+				if ea.Email == email {
+					attendees[i] = ea
+				}
 			}
+			attendees[i].Optional = m["optional"].(bool)
 		}
 
 		event.Attendees = attendees
 	}
 
-	// Parse attachments
+	// Attachments
 	attachmentsRaw := d.Get("attachment").(*schema.Set)
 	if attachmentsRaw.Len() > 0 {
 
@@ -381,7 +394,7 @@ func resourceEventBuild(d *schema.ResourceData) (*calendar.Event, error) {
 		event.Attachments = attachments
 	}
 
-	return &event, nil
+	return event, nil
 }
 
 // flattenEventAttendees flattens the list of event attendees into a map for
