@@ -8,6 +8,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
 	"github.com/hashicorp/terraform-plugin-framework/diag"
+	fwpath "github.com/hashicorp/terraform-plugin-framework/path"
 	"github.com/hashicorp/terraform-plugin-framework/resource"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema"
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/booldefault"
@@ -19,8 +20,11 @@ import (
 	"google.golang.org/api/calendar/v3"
 )
 
-// Ensure the implementation satisfies the resource.Resource interface.
-var _ resource.Resource = &eventResource{}
+// Ensure the implementation satisfies the expected interfaces.
+var (
+	_ resource.Resource                = &eventResource{}
+	_ resource.ResourceWithImportState = &eventResource{}
+)
 
 // eventResource is the resource implementation.
 type eventResource struct {
@@ -373,6 +377,12 @@ func (r *eventResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		)
 		return
 	}
+}
+
+// ImportState imports an existing event by its Google Calendar event ID.
+func (r *eventResource) ImportState(ctx context.Context, req resource.ImportStateRequest, resp *resource.ImportStateResponse) {
+	// The import ID is the Google Calendar event ID, which is stored as the resource ID
+	resource.ImportStatePassthroughID(ctx, fwpath.Root("id"), req, resp)
 }
 
 // buildEvent builds a calendar.Event from the Terraform model.

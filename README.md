@@ -103,6 +103,15 @@ If you only want to change or remove future events, you must do so on the web
 UI. Update the first occurrence and save it with the "this and following events"
 option. From there, remove the event from Terraform state and apply a new one.
 
+### Importing Existing Events
+
+You can import existing Google Calendar events into Terraform state using the
+event's ID:
+
+```bash
+terraform import googlecalendar_event.my_meeting <event-id>
+```
+
 ## Google Authentication
 
 Anticipated use is with `gcloud` using your own Google identity with Application
