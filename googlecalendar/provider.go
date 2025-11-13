@@ -4,77 +4,107 @@ package googlecalendar
 import (
 	"context"
 	"fmt"
-	"log"
 	"runtime"
 
-	"github.com/hashicorp/terraform-plugin-sdk/helper/schema"
-	"github.com/hashicorp/terraform-plugin-sdk/terraform"
+	"github.com/hashicorp/terraform-plugin-framework/datasource"
+	"github.com/hashicorp/terraform-plugin-framework/provider"
+	"github.com/hashicorp/terraform-plugin-framework/provider/schema"
+	"github.com/hashicorp/terraform-plugin-framework/resource"
+	"github.com/hashicorp/terraform-plugin-framework/types"
 	"google.golang.org/api/calendar/v3"
 	"google.golang.org/api/option"
 )
 
-// Provider returns the actual provider instance.
-func Provider() terraform.ResourceProvider {
-	provider := &schema.Provider{
-		Schema: map[string]*schema.Schema{
-			"credentials": {
-				Type:     schema.TypeString,
-				Optional: true,
-				DefaultFunc: schema.MultiEnvDefaultFunc([]string{
-					"GOOGLE_CREDENTIALS",
-					"GOOGLE_CLOUD_KEYFILE_JSON",
-					"GCLOUD_KEYFILE_JSON",
-				}, nil),
-			},
-		},
-		ResourcesMap: map[string]*schema.Resource{
-			"googlecalendar_event": resourceEvent(),
-		},
-	}
+// Ensure the implementation satisfies the provider.Provider interface.
+var _ provider.Provider = &googleCalendarProvider{}
 
-	provider.ConfigureFunc = func(d *schema.ResourceData) (interface{}, error) {
-		terraformVersion := provider.TerraformVersion
-		if terraformVersion == "" {
-			// Terraform 0.12 introduced this field to the protocol
-			// We can therefore assume that if it's missing it's 0.10 or 0.11
-			terraformVersion = "0.11+compatible"
-		}
-		return providerConfigure(d, provider, terraformVersion)
-	}
-	return provider
+// googleCalendarProvider is the provider implementation.
+type googleCalendarProvider struct {
+	version string
 }
 
-// providerConfigure configures the provider. Normally this would use schema
-// data from the provider, but the provider loads all its configuration from the
-// environment, so we just tell the config to load.
-func providerConfigure(d *schema.ResourceData, p *schema.Provider, terraformVersion string) (interface{}, error) {
+// googleCalendarProviderModel describes the provider data model.
+type googleCalendarProviderModel struct {
+	Credentials types.String `tfsdk:"credentials"`
+}
+
+// New creates a new provider instance.
+func New() provider.Provider {
+	return &googleCalendarProvider{}
+}
+
+// Metadata returns the provider type name.
+func (p *googleCalendarProvider) Metadata(ctx context.Context, req provider.MetadataRequest, resp *provider.MetadataResponse) {
+	resp.TypeName = "googlecalendar"
+	resp.Version = p.version
+}
+
+// Schema defines the provider-level schema for configuration data.
+func (p *googleCalendarProvider) Schema(ctx context.Context, req provider.SchemaRequest, resp *provider.SchemaResponse) {
+	resp.Schema = schema.Schema{
+		Description: "Terraform provider for managing Google Calendar events.",
+		Attributes: map[string]schema.Attribute{
+			"credentials": schema.StringAttribute{
+				Description: "Google Cloud credentials JSON. Can also be set via GOOGLE_CREDENTIALS, GOOGLE_CLOUD_KEYFILE_JSON, or GCLOUD_KEYFILE_JSON environment variables.",
+				Optional:    true,
+			},
+		},
+	}
+}
+
+// Configure prepares a Google Calendar API client for data sources and resources.
+func (p *googleCalendarProvider) Configure(ctx context.Context, req provider.ConfigureRequest, resp *provider.ConfigureResponse) {
+	var config googleCalendarProviderModel
+
+	resp.Diagnostics.Append(req.Config.Get(ctx, &config)...)
+	if resp.Diagnostics.HasError() {
+		return
+	}
+
 	var opts []option.ClientOption
 
 	// Add credential source
-	if v := d.Get("credentials").(string); v != "" {
-		log.Printf("[TRACE] using supplied credentials")
-		opts = append(opts, option.WithCredentialsJSON([]byte(v)))
-	} else {
-		log.Printf("[TRACE] attempting to use default credentials: %#v", d.Get("credentials"))
+	if !config.Credentials.IsNull() && !config.Credentials.IsUnknown() {
+		credentials := config.Credentials.ValueString()
+		if credentials != "" {
+			opts = append(opts, option.WithCredentialsJSON([]byte(credentials)))
+		}
 	}
 
-	// Use a custom user-agent string. This helps google with analytics and it's
-	// just a nice thing to do.
+	// Use a custom user-agent string
+	terraformVersion := req.TerraformVersion
+	if terraformVersion == "" {
+		terraformVersion = "unknown"
+	}
 	userAgent := fmt.Sprintf("(%s %s) Terraform/%s",
 		runtime.GOOS, runtime.GOARCH, terraformVersion)
 	opts = append(opts, option.WithUserAgent(userAgent))
 
-	log.Printf("[TRACE] client options: %v", opts)
-
-	// Create the calendar service.
-	ctx := context.Background()
+	// Create the calendar service
 	calendarSvc, err := calendar.NewService(ctx, opts...)
 	if err != nil {
-		return nil, fmt.Errorf("failed to create calendar service: %w", err)
+		resp.Diagnostics.AddError(
+			"Unable to create Google Calendar API client",
+			fmt.Sprintf("Failed to create calendar service: %s", err),
+		)
+		return
 	}
 	calendarSvc.UserAgent = userAgent
 
-	return &Config{
+	// Make the calendar service available to resources and data sources
+	resp.ResourceData = &Config{
 		calendar: calendarSvc,
-	}, nil
+	}
+}
+
+// Resources returns the provider's resources.
+func (p *googleCalendarProvider) Resources(ctx context.Context) []func() resource.Resource {
+	return []func() resource.Resource{
+		NewEventResource,
+	}
+}
+
+// DataSources returns the provider's data sources.
+func (p *googleCalendarProvider) DataSources(ctx context.Context) []func() datasource.DataSource {
+	return []func() datasource.DataSource{}
 }
