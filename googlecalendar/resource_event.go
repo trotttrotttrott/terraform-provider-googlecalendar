@@ -4,6 +4,8 @@ import (
 	"context"
 	"fmt"
 	"path"
+	"strings"
+	"time"
 
 	"github.com/hashicorp/terraform-plugin-framework-validators/stringvalidator"
 	"github.com/hashicorp/terraform-plugin-framework/attr"
@@ -17,6 +19,7 @@ import (
 	"github.com/hashicorp/terraform-plugin-framework/resource/schema/stringplanmodifier"
 	"github.com/hashicorp/terraform-plugin-framework/schema/validator"
 	"github.com/hashicorp/terraform-plugin-framework/types"
+	"github.com/teambition/rrule-go"
 	"google.golang.org/api/calendar/v3"
 )
 
@@ -51,6 +54,7 @@ type eventResourceModel struct {
 	Attendees               types.Set    `tfsdk:"attendee"`
 	Attachments             types.Set    `tfsdk:"attachment"`
 	HTMLLink                types.String `tfsdk:"html_link"`
+	DeletionPolicy          types.String `tfsdk:"deletion_policy"`
 }
 
 // attendeeModel describes the attendee nested object.
@@ -166,6 +170,19 @@ func (r *eventResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 				Computed:    true,
 				PlanModifiers: []planmodifier.String{
 					stringplanmodifier.UseStateForUnknown(),
+				},
+			},
+			"deletion_policy": schema.StringAttribute{
+				Description: "Behavior when this resource is destroyed (e.g. via `-replace`). " +
+					"`DELETE` (default) removes the entire recurring series, past and future. " +
+					"`TRUNCATE` caps the series with an UNTIL just before its next occurrence - " +
+					"equivalent to the calendar UI's \"this and following events\" delete - so past " +
+					"instances remain on the calendar.",
+				Optional: true,
+				Computed: true,
+				Default:  stringdefault.StaticString("DELETE"),
+				Validators: []validator.String{
+					stringvalidator.OneOf("DELETE", "TRUNCATE"),
 				},
 			},
 		},
@@ -354,7 +371,13 @@ func (r *eventResource) Update(ctx context.Context, req resource.UpdateRequest, 
 	resp.Diagnostics.Append(resp.State.Set(ctx, &plan)...)
 }
 
-// Delete deletes the resource and removes the Terraform state on success.
+// Delete deletes the resource and removes the Terraform state on success. If
+// deletion_policy is "TRUNCATE", the underlying series is capped just before
+// its next occurrence instead of being deleted outright - equivalent to the
+// calendar UI's "this and following events" delete - so past instances stay
+// on the calendar. Either way, Terraform drops the resource from state once
+// Delete returns without error; that part isn't conditional on what the API
+// call underneath actually did.
 func (r *eventResource) Delete(ctx context.Context, req resource.DeleteRequest, resp *resource.DeleteResponse) {
 	var state eventResourceModel
 
@@ -364,8 +387,26 @@ func (r *eventResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		return
 	}
 
-	// Delete the event via API
 	sendNotifications := state.SendNotifications.ValueBool()
+
+	if state.DeletionPolicy.ValueString() == "TRUNCATE" && !state.Recurrence.IsNull() {
+		truncated, err := r.truncateRecurrence(ctx, state.ID.ValueString(), sendNotifications)
+		if err != nil {
+			resp.Diagnostics.AddError(
+				"Error truncating event",
+				fmt.Sprintf("Could not truncate event %s: %s", state.ID.ValueString(), err),
+			)
+			return
+		}
+		if truncated {
+			return
+		}
+		// No future occurrence found - the series has already run its
+		// course, so there's nothing left to preserve. Fall through to a
+		// normal delete.
+	}
+
+	// Delete the event via API
 	err := r.config.calendar.Events.
 		Delete("primary", state.ID.ValueString()).
 		SendNotifications(sendNotifications).
@@ -377,6 +418,95 @@ func (r *eventResource) Delete(ctx context.Context, req resource.DeleteRequest, 
 		)
 		return
 	}
+}
+
+// truncateRecurrence caps a recurring event's RRULEs at its next occurrence,
+// rather than deleting it, so past instances remain visible on the calendar.
+// It reports false (with no error) when the series has no future occurrence
+// left to cap.
+func (r *eventResource) truncateRecurrence(ctx context.Context, id string, sendNotifications bool) (bool, error) {
+
+	event, err := r.config.calendar.Events.Get("primary", id).Do()
+	if err != nil {
+		return false, fmt.Errorf("reading event: %w", err)
+	}
+
+	boundary, err := nextOccurrenceBoundary(event.Recurrence, event.Start)
+	if err != nil {
+		return false, fmt.Errorf("computing recurrence boundary: %w", err)
+	}
+	if boundary == nil {
+		return false, nil
+	}
+
+	event.Recurrence = capRecurrenceUntil(event.Recurrence, *boundary)
+
+	_, err = r.config.calendar.Events.
+		Update("primary", id, event).
+		SendNotifications(sendNotifications).
+		Do()
+	if err != nil {
+		return false, fmt.Errorf("updating recurrence: %w", err)
+	}
+
+	return true, nil
+}
+
+// nextOccurrenceBoundary returns the UNTIL bound - one second before the next
+// occurrence at or after now, in the UTC form Google writes (RFC 5545) - or
+// nil if the series has no future occurrence.
+func nextOccurrenceBoundary(recurrence []string, start *calendar.EventDateTime) (*time.Time, error) {
+
+	if start == nil || start.DateTime == "" {
+		return nil, fmt.Errorf("event has no start date-time")
+	}
+
+	dtStart, err := time.Parse(time.RFC3339, start.DateTime)
+	if err != nil {
+		return nil, fmt.Errorf("parsing start %q: %w", start.DateTime, err)
+	}
+
+	set, err := rrule.StrToRRuleSet(strings.Join(recurrence, "\n"))
+	if err != nil {
+		return nil, fmt.Errorf("parsing recurrence %v: %w", recurrence, err)
+	}
+	set.DTStart(dtStart)
+
+	next := set.After(time.Now(), true)
+	if next.IsZero() {
+		return nil, nil
+	}
+
+	boundary := next.UTC().Add(-time.Second)
+	return &boundary, nil
+}
+
+// capRecurrenceUntil replaces (or adds) the UNTIL component of each RRULE
+// line with boundary, leaving EXRULE/RDATE/EXDATE lines untouched.
+func capRecurrenceUntil(recurrence []string, boundary time.Time) []string {
+
+	until := boundary.Format("20060102T150405Z")
+	capped := make([]string, len(recurrence))
+
+	for i, line := range recurrence {
+		if !strings.HasPrefix(line, "RRULE:") {
+			capped[i] = line
+			continue
+		}
+
+		var parts []string
+		for _, part := range strings.Split(strings.TrimPrefix(line, "RRULE:"), ";") {
+			if strings.HasPrefix(part, "UNTIL=") || strings.HasPrefix(part, "COUNT=") {
+				continue
+			}
+			parts = append(parts, part)
+		}
+		parts = append(parts, "UNTIL="+until)
+
+		capped[i] = "RRULE:" + strings.Join(parts, ";")
+	}
+
+	return capped
 }
 
 // ImportState imports an existing event by its Google Calendar event ID.

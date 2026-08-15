@@ -5,6 +5,7 @@ go 1.24.0
 require (
 	github.com/hashicorp/terraform-plugin-framework v1.16.1
 	github.com/hashicorp/terraform-plugin-framework-validators v0.19.0
+	github.com/teambition/rrule-go v1.8.2
 	google.golang.org/api v0.204.0
 )
 

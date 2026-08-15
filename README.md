@@ -92,16 +92,33 @@ resource "googlecalendar_event" "test" {
 
 ### Changing Events
 
-When this provider updates or destroys a recurring event, all instances past and
-future are impacted.
+When this provider updates a recurring event in place, all instances past and
+future are impacted. Some changes - like moving a series to a different
+weekday - aren't sensible as an in-place update at all, since they change which
+occurrences the series was ever meant to cover. For those, destroy and
+recreate the resource, e.g.:
 
-[This guide](https://developers.google.com/calendar/api/guides/recurringevents#modifying_all_following_instances)
-describes how to implement functionality similar to "this and following events"
-like the web UI. **This is not implemented in the provider.**
+```
+terraform apply -replace='googlecalendar_event.main["someone"]'
+```
 
-If you only want to change or remove future events, you must do so on the web
-UI. Update the first occurrence and save it with the "this and following events"
-option. From there, remove the event from Terraform state and apply a new one.
+By default (`deletion_policy = "DELETE"`, the default), destroying a resource
+deletes the entire series, past and future. Set `deletion_policy = "TRUNCATE"`
+to instead cap the series with an `UNTIL` just before its next occurrence -
+equivalent to the calendar UI's "this and following events" delete - so past
+instances stay on the calendar. Terraform still drops the resource from state
+either way; only the underlying calendar event differs.
+
+```hcl
+resource "googlecalendar_event" "someone" {
+  # ...
+  deletion_policy = "TRUNCATE"
+}
+```
+
+This implements the approach described in
+[this guide](https://developers.google.com/calendar/api/guides/recurringevents#modifying_all_following_instances)
+for "this and following events" edits.
 
 ### Importing Existing Events
 
