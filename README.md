@@ -92,22 +92,11 @@ resource "googlecalendar_event" "test" {
 
 ### Changing Events
 
-When this provider updates a recurring event in place, all instances past and
-future are impacted. Some changes - like moving a series to a different
-weekday - aren't sensible as an in-place update at all, since they change which
-occurrences the series was ever meant to cover. For those, destroy and
-recreate the resource, e.g.:
-
-```
-terraform apply -replace='googlecalendar_event.main["someone"]'
-```
-
-By default (`deletion_policy = "DELETE"`, the default), destroying a resource
-deletes the entire series, past and future. Set `deletion_policy = "TRUNCATE"`
-to instead cap the series with an `UNTIL` just before its next occurrence -
-equivalent to the calendar UI's "this and following events" delete - so past
-instances stay on the calendar. Terraform still drops the resource from state
-either way; only the underlying calendar event differs.
+By default (`deletion_policy = "DELETE"`), destroying a resource deletes the
+entire series, past and future. Set `deletion_policy = "TRUNCATE"` to instead
+cap the series with an `UNTIL` just before its next occurrence - equivalent to
+the calendar UI's "this and following events" delete - so past instances stay on
+the calendar.
 
 ```hcl
 resource "googlecalendar_event" "someone" {
@@ -116,19 +105,16 @@ resource "googlecalendar_event" "someone" {
 }
 ```
 
-This implements the approach described in
-[this guide](https://developers.google.com/calendar/api/guides/recurringevents#modifying_all_following_instances)
-for "this and following events" edits.
+This implements the approach described in [this
+guide](https://developers.google.com/calendar/api/guides/recurringevents#modifying_all_following_instances).
 
 ### Reconciling External Forks
 
-The "this and following events" split isn't unique to `deletion_policy =
-"TRUNCATE"` - anyone editing the event directly in the Calendar UI can trigger
-the same split on a series Terraform manages. That caps the tracked event with
-an `UNTIL` and forks the remainder onto a new id, all outside Terraform. The
-next `plan` or `apply` then sees the cap as recurrence drift, but updating the
-tracked id in place would just remove the cap from an event Google has already
-superseded - it wouldn't touch the live series.
+Anyone editing the event directly in the Calendar UI can trigger a split where
+it caps the tracked event's recurrence with an `UNTIL` and forks the remainder
+onto a new id. The next `plan` or `apply` then sees this as drift, but updating
+the tracked id in place would just remove the cap from an event Google has
+already superseded - it wouldn't touch the live series.
 
 Set `auto_reconcile = true` to have `Read` detect this - an `UNTIL` appearing
 on the tracked event's recurrence that wasn't there last time - and search
@@ -145,6 +131,23 @@ resource "googlecalendar_event" "someone" {
 Either way, a `Warning` diagnostic is emitted so the outcome shows up in
 `plan`/`apply` output - the id being repointed and where to review it, or why
 no continuation was found (the series may have simply ended at the cap).
+
+This depends on `lifecycle { ignore_changes = [start, end] }` being set. The
+live continuation's `start` is whatever occurrence the fork happened to land on,
+not the value your `start`/`end` arguments compute - without `ignore_changes`,
+the next plan would see that mismatch and push the old computed `start`/`end`
+right back onto the newly repointed event, undoing the repoint:
+
+```hcl
+resource "googlecalendar_event" "someone" {
+  # ...
+  auto_reconcile = true
+
+  lifecycle {
+    ignore_changes = [start, end]
+  }
+}
+```
 
 It's off by default: a wrong match would silently repoint state at the wrong
 event, and unlike `deletion_policy`, there's no explicit action here to signal
