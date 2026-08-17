@@ -120,6 +120,37 @@ This implements the approach described in
 [this guide](https://developers.google.com/calendar/api/guides/recurringevents#modifying_all_following_instances)
 for "this and following events" edits.
 
+### Reconciling External Forks
+
+The "this and following events" split isn't unique to `deletion_policy =
+"TRUNCATE"` - anyone editing the event directly in the Calendar UI can trigger
+the same split on a series Terraform manages. That caps the tracked event with
+an `UNTIL` and forks the remainder onto a new id, all outside Terraform. The
+next `plan` or `apply` then sees the cap as recurrence drift, but updating the
+tracked id in place would just remove the cap from an event Google has already
+superseded - it wouldn't touch the live series.
+
+Set `auto_reconcile = true` to have `Read` detect this - an `UNTIL` appearing
+on the tracked event's recurrence that wasn't there last time - and search
+forward from the cap for the live continuation (a same-summary event carrying
+a different recurring event id), repointing state at it automatically:
+
+```hcl
+resource "googlecalendar_event" "someone" {
+  # ...
+  auto_reconcile = true
+}
+```
+
+Either way, a `Warning` diagnostic is emitted so the outcome shows up in
+`plan`/`apply` output - the id being repointed and where to review it, or why
+no continuation was found (the series may have simply ended at the cap).
+
+It's off by default: a wrong match would silently repoint state at the wrong
+event, and unlike `deletion_policy`, there's no explicit action here to signal
+intent - it's watching for something that can happen at any time, outside of
+Terraform.
+
 ### Importing Existing Events
 
 You can import existing Google Calendar events into Terraform state using the

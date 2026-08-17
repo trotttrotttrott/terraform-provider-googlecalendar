@@ -55,6 +55,7 @@ type eventResourceModel struct {
 	Attachments             types.Set    `tfsdk:"attachment"`
 	HTMLLink                types.String `tfsdk:"html_link"`
 	DeletionPolicy          types.String `tfsdk:"deletion_policy"`
+	AutoReconcile           types.Bool   `tfsdk:"auto_reconcile"`
 }
 
 // attendeeModel describes the attendee nested object.
@@ -185,6 +186,17 @@ func (r *eventResource) Schema(ctx context.Context, req resource.SchemaRequest, 
 					stringvalidator.OneOf("DELETE", "TRUNCATE"),
 				},
 			},
+			"auto_reconcile": schema.BoolAttribute{
+				Description: "When true, Read repoints this resource at the live continuation if the " +
+					"calendar forks its recurring series - e.g. a \"this and following events\" edit made " +
+					"directly on the calendar. Detected as an UNTIL appearing on the series that wasn't " +
+					"there before; the fix is found by searching forward from the cap for a same-summary " +
+					"event carrying a different recurring event id. Off by default, since a wrong match " +
+					"would silently repoint state at the wrong event.",
+				Optional: true,
+				Computed: true,
+				Default:  booldefault.StaticBool(false),
+			},
 		},
 		Blocks: map[string]schema.Block{
 			"attendee": schema.SetNestedBlock{
@@ -309,6 +321,47 @@ func (r *eventResource) Read(ctx context.Context, req resource.ReadRequest, resp
 			fmt.Sprintf("Could not read event %s: %s", state.ID.ValueString(), err),
 		)
 		return
+	}
+
+	if state.AutoReconcile.ValueBool() {
+		if until, priorRecurrence, forked := forkedSince(ctx, &state, event); forked {
+			oldID := state.ID.ValueString()
+
+			// Search using the prior (uncapped) recurrence, not the freshly
+			// fetched one - the live rule's own UNTIL would stop it from ever
+			// generating an occurrence past the cap to search from.
+			live, reason, err := r.findFork(ctx, event.Summary, priorRecurrence, event.Start, oldID, until)
+			switch {
+			case err != nil:
+				resp.Diagnostics.AddWarning(
+					"Could not search for forked recurring series",
+					fmt.Sprintf("%q (id %s) was capped at %s by an external calendar edit, but searching "+
+						"for its live continuation failed: %s. auto_reconcile will retry on the next "+
+						"refresh; state was left pointed at the capped id in the meantime.",
+						event.Summary, oldID, until.Local(), err),
+				)
+			case live == nil:
+				resp.Diagnostics.AddWarning(
+					"Recurring series capped with no live continuation found",
+					fmt.Sprintf("%q (id %s) was capped at %s by an external calendar edit (e.g. \"this and "+
+						"following events\"), but no live continuation was found: %s. State was left "+
+						"pointed at the capped id - if the series was meant to end, this is expected and "+
+						"safe to ignore; otherwise reconcile manually.",
+						event.Summary, oldID, until.Local(), reason),
+				)
+			default:
+				resp.Diagnostics.AddWarning(
+					"Repointed forked recurring series",
+					fmt.Sprintf("%q was capped at %s by an external calendar edit (e.g. \"this and "+
+						"following events\"), forking it from %s onto %s. The continuation starts %s with "+
+						"recurrence %v. State has been repointed at it here in Read(); run terraform apply "+
+						"to persist the new id, or review it first at %s.",
+						event.Summary, until.Local(), oldID, live.Id, live.Start.DateTime, live.Recurrence, live.HtmlLink),
+				)
+				state.ID = types.StringValue(live.Id)
+				event = live
+			}
+		}
 	}
 
 	// Update the state with the API data
@@ -457,6 +510,19 @@ func (r *eventResource) truncateRecurrence(ctx context.Context, id string, sendN
 // nil if the series has no future occurrence.
 func nextOccurrenceBoundary(recurrence []string, start *calendar.EventDateTime) (*time.Time, error) {
 
+	next, err := nextOccurrenceAt(recurrence, start, time.Now())
+	if err != nil || next == nil {
+		return nil, err
+	}
+
+	boundary := next.UTC().Add(-time.Second)
+	return &boundary, nil
+}
+
+// nextOccurrenceAt returns the first occurrence of recurrence at or after
+// after, or nil if the series has no such occurrence.
+func nextOccurrenceAt(recurrence []string, start *calendar.EventDateTime, after time.Time) (*time.Time, error) {
+
 	if start == nil || start.DateTime == "" {
 		return nil, fmt.Errorf("event has no start date-time")
 	}
@@ -472,13 +538,138 @@ func nextOccurrenceBoundary(recurrence []string, start *calendar.EventDateTime) 
 	}
 	set.DTStart(dtStart)
 
-	next := set.After(time.Now(), true)
+	next := set.After(after, true)
 	if next.IsZero() {
 		return nil, nil
 	}
 
-	boundary := next.UTC().Add(-time.Second)
-	return &boundary, nil
+	return &next, nil
+}
+
+// untilFrom returns the UNTIL bound of a recurrence's RRULE, if it has one.
+// Google adds one to a series when a "this and following events" edit forks
+// it, which makes it the boundary between the old event id and the new one.
+func untilFrom(recurrence []string) (time.Time, bool) {
+
+	for _, line := range recurrence {
+		if !strings.HasPrefix(line, "RRULE:") {
+			continue
+		}
+
+		for _, part := range strings.Split(strings.TrimPrefix(line, "RRULE:"), ";") {
+			if !strings.HasPrefix(part, "UNTIL=") {
+				continue
+			}
+
+			// RFC 5545 UTC form, which is what Google writes.
+			until, err := time.Parse("20060102T150405Z", strings.TrimPrefix(part, "UNTIL="))
+			if err != nil {
+				continue
+			}
+
+			return until, true
+		}
+	}
+
+	return time.Time{}, false
+}
+
+// forkedSince reports whether event's recurrence now carries an UNTIL that
+// state's tracked recurrence didn't - the signature of a "this and following
+// events" edit made directly on the calendar since we last saw this event,
+// which caps the tracked series and forks the remainder onto a new id. It
+// also returns the prior (uncapped) recurrence, needed to search past the
+// cap: the freshly capped rule can't generate occurrences beyond its own
+// UNTIL.
+func forkedSince(ctx context.Context, state *eventResourceModel, event *calendar.Event) (time.Time, []string, bool) {
+
+	until, hasUntil := untilFrom(event.Recurrence)
+	if !hasUntil {
+		return time.Time{}, nil, false
+	}
+
+	if state.Recurrence.IsNull() {
+		return until, nil, true
+	}
+
+	var priorRecurrence []string
+	if diags := state.Recurrence.ElementsAs(ctx, &priorRecurrence, false); diags.HasError() {
+		return until, nil, true
+	}
+
+	if _, alreadyCapped := untilFrom(priorRecurrence); alreadyCapped {
+		return time.Time{}, nil, false
+	}
+
+	return until, priorRecurrence, true
+}
+
+// findFork searches forward from a series' UNTIL cap for the live
+// continuation Google forked it onto - a same-summary event carrying a
+// recurring event id other than oldID - and returns that continuation's
+// master event. It reports a nil event, with no error, when the next few
+// expected occurrences turn up nothing to repoint at; the returned reason
+// explains which of those cases applied, for the caller to surface.
+func (r *eventResource) findFork(ctx context.Context, summary string, recurrence []string, start *calendar.EventDateTime, oldID string, cappedAt time.Time) (*calendar.Event, string, error) {
+
+	after := cappedAt
+	const maxOccurrences = 4
+	checked := 0
+
+	// Try the next few expected occurrences past the cap.
+	for checked < maxOccurrences {
+
+		next, err := nextOccurrenceAt(recurrence, start, after)
+		if err != nil {
+			return nil, "", err
+		}
+		if next == nil {
+			return nil, fmt.Sprintf("the prior recurrence has no expected occurrence after the cap "+
+				"(checked %d)", checked), nil
+		}
+		checked++
+
+		events, err := r.config.calendar.Events.List("primary").
+			OrderBy("startTime").
+			ShowDeleted(false).
+			SingleEvents(true).
+			TimeMin(next.Format(time.RFC3339)).
+			TimeMax(next.Add(time.Hour).Format(time.RFC3339)).
+			Do()
+		if err != nil {
+			return nil, "", err
+		}
+
+		var matched *calendar.Event
+		for _, e := range events.Items {
+			if e.Summary == summary {
+				matched = e
+				break
+			}
+		}
+
+		switch {
+		case matched == nil:
+			// Nothing at this expected occurrence - try the next one.
+		case matched.RecurringEventId == "":
+			return nil, fmt.Sprintf("the expected occurrence at %s is a detached one-off with no "+
+				"recurring series - leaving it alone", next.Local()), nil
+		case matched.RecurringEventId == oldID:
+			return nil, fmt.Sprintf("the expected occurrence at %s still belongs to %s - no fork "+
+				"happened, so the recurrence difference reflects a real, unresolved drift", next.Local(), oldID), nil
+		default:
+			live, err := r.config.calendar.Events.Get("primary", matched.RecurringEventId).Do()
+			if err != nil {
+				return nil, "", err
+			}
+			return live, "", nil
+		}
+
+		after = next.Add(24 * time.Hour)
+	}
+
+	return nil, fmt.Sprintf("checked the next %d expected occurrences past the cap and found none "+
+		"matching %q", checked, summary), nil
 }
 
 // capRecurrenceUntil replaces (or adds) the UNTIL component of each RRULE
